@@ -1,0 +1,25 @@
+整理SCPI协议手册
+设定开发计划，暂定大概功能
+
+=== 2026-02-07 通信层对接完成 ===
+✅ 完成 Transport 传输层（串口 + TCP）
+✅ 完成 SCPI 协议客户端
+✅ 完成设备业务层（ElectronicLoad）
+✅ 完成设备管理器（DeviceManager）
+✅ UI 集成真实设备通信
+✅ 实现连接/断开、模式切换、参数下发
+✅ 实现 START/STOP 控制
+✅ 实现实时测量轮询（V/I/P/R）
+✅ 实现通信日志记录
+✅ 实现 SCPI 终端
+
+已实现的 SCPI 命令：
+- 系统命令：*IDN?, *RST, *CLS, SYST:REM/LOC/RWL, SYST:BEEP, SYST:SENS
+- 模式控制：MODE (CC/CV/CP/CR)
+- 参数设定：CURR, VOLT, POW, RES
+- 保护设置：CURR:PROT, POW:PROT, VOLT:ON/OFF
+- 量程设置：CURR:RANG, VOLT:RANG
+- 测量命令：MEAS:VOLT?, MEAS:CURR?, MEAS:POW?, MEAS:RES?
+- 输入控制：INPUT ON/OFF
+
+下一步：测试验证、完善错误处理、添加高级功能

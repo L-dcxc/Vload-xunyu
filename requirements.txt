@@ -1,0 +1,5 @@
+PyQt6==6.7.1
+pyqtgraph==0.13.7
+numpy>=1.26
+pyserial>=3.5
+openpyxl>=3.1
