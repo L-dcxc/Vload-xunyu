@@ -26,12 +26,12 @@ class PlotPanel(QFrame):
 
         self._paused = False
         self._follow_latest = True
-        self._follow_window_s = 60.0
-        self._t = deque(maxlen=1200)
-        self._v = deque(maxlen=1200)
-        self._i = deque(maxlen=1200)
-        self._p = deque(maxlen=1200)
-        self._r = deque(maxlen=1200)  # 添加电阻数据
+        self._follow_window_s = 600.0
+        self._t = deque(maxlen=50000)
+        self._v = deque(maxlen=50000)
+        self._i = deque(maxlen=50000)
+        self._p = deque(maxlen=50000)
+        self._r = deque(maxlen=50000)  # 添加电阻数据
 
         root = QVBoxLayout(self)
         root.setContentsMargins(14, 12, 14, 12)
@@ -74,7 +74,7 @@ class PlotPanel(QFrame):
         self.plot = pg.PlotWidget()
         self.plot.setBackground(None)
         self.plot.showGrid(x=True, y=True, alpha=0.25)
-        self.plot.addLegend(offset=(10, 10))
+        self._legend = self.plot.addLegend(offset=(10, 10))
         
         # 启用自动范围调整，解决鼠标交互后不刷新的问题
         self.plot.enableAutoRange(axis='x', enable=True)
@@ -108,6 +108,8 @@ class PlotPanel(QFrame):
 
         self.plot.scene().sigMouseClicked.connect(self._on_plot_clicked)
         self.plot.getPlotItem().vb.sigRangeChangedManually.connect(self._on_range_changed_manually)
+
+        self._install_legend_sync()
 
     def set_paused(self, paused: bool) -> None:
         self._paused = paused
@@ -149,6 +151,16 @@ class PlotPanel(QFrame):
         self._follow_latest = False
         self.btn_follow.setText("跟随最新")
 
+    def show_all(self) -> None:
+        if not self._t:
+            return
+        self.disable_follow()
+        t_min = float(self._t[0])
+        t_max = float(self._t[-1])
+        vb = self.plot.getPlotItem().vb
+        vb.setXRange(t_min, t_max, padding=0.02)
+        vb.enableAutoRange(axis='y', enable=True)
+
     def _apply_follow_view(self, force: bool = False) -> None:
         if not self._t:
             return
@@ -186,8 +198,79 @@ class PlotPanel(QFrame):
         self.curve_i.setVisible(self.cb_i.isChecked())
         self.curve_p.setVisible(self.cb_p.isChecked())
         self.curve_r.setVisible(self.cb_r.isChecked())  # 控制电阻曲线显示
+        self._sync_checkboxes_from_curves()
+
+    def _sync_checkboxes_from_curves(self) -> None:
+        def _set(cb: QCheckBox, checked: bool) -> None:
+            cb.blockSignals(True)
+            try:
+                cb.setChecked(checked)
+            finally:
+                cb.blockSignals(False)
+
+        _set(self.cb_v, bool(self.curve_v.isVisible()))
+        _set(self.cb_i, bool(self.curve_i.isVisible()))
+        _set(self.cb_p, bool(self.curve_p.isVisible()))
+        _set(self.cb_r, bool(self.curve_r.isVisible()))
+
+    def _install_legend_sync(self) -> None:
+        if not getattr(self, "_legend", None):
+            return
+
+        def _set_cb(cb: QCheckBox, checked: bool) -> None:
+            cb.blockSignals(True)
+            try:
+                cb.setChecked(checked)
+            finally:
+                cb.blockSignals(False)
+            self._refresh_visibility()
+
+        for sample, label in getattr(self._legend, "items", []):
+            try:
+                text = str(label.text)
+            except Exception:
+                try:
+                    text = str(label.textItem.toPlainText())
+                except Exception:
+                    text = ""
+
+            if "电压" in text:
+                cb = self.cb_v
+                curve = self.curve_v
+            elif "电流" in text:
+                cb = self.cb_i
+                curve = self.curve_i
+            elif "功率" in text:
+                cb = self.cb_p
+                curve = self.curve_p
+            elif "电阻" in text or "内阻" in text:
+                cb = self.cb_r
+                curve = self.curve_r
+            else:
+                continue
+
+            old = getattr(label, "mouseClickEvent", None)
+
+            def _handler(ev, _cb=cb, _curve=curve, _old=old):  # type: ignore[no-untyped-def]
+                try:
+                    if _old:
+                        _old(ev)
+                except Exception:
+                    pass
+                _set_cb(_cb, not _curve.isVisible())
+
+            try:
+                label.mouseClickEvent = _handler  # type: ignore[method-assign]
+            except Exception:
+                pass
 
     def _on_plot_clicked(self, event):  # type: ignore[no-untyped-def]
+        # 无论点到哪里（含左侧图例的“眼睛”），都先同步一次状态，避免左右开关不同步
+        try:
+            self._sync_checkboxes_from_curves()
+        except Exception:
+            pass
+
         if not self._t:
             return
 
@@ -212,3 +295,9 @@ class PlotPanel(QFrame):
         
         self._marker.setData([tt], [vv])
         self.marker_label.setText(f"标记点：{time_str}  V={vv:.3f}V  I={ii:.3f}A  P={pp:.3f}W  R={rr:.3f}Ω")
+
+        # 处理完标记点后再次同步（legend 点击可能发生在同一帧）
+        try:
+            self._sync_checkboxes_from_curves()
+        except Exception:
+            pass

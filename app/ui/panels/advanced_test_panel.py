@@ -13,12 +13,17 @@ from PyQt6.QtWidgets import (
 )
 
 from .short_test_panel import ShortTestPanel
+from .battery_test_panel import BatteryTestPanel
 
 
 class AdvancedTestPanel(QFrame):
     short_start_requested = pyqtSignal(float, str, str)  # duration_s, curr_prot, pow_prot
     short_stop_requested = pyqtSignal()
     short_estop_requested = pyqtSignal()
+
+    battery_start_requested = pyqtSignal(str, str, str, str, str)  # mode, value, cutoff_v, cutoff_time_s, cutoff_mah
+    battery_stop_requested = pyqtSignal()
+    battery_estop_requested = pyqtSignal()
 
     def __init__(self, parent=None):
         super().__init__(parent)
@@ -67,6 +72,11 @@ class AdvancedTestPanel(QFrame):
         self.short_panel.stop_requested.connect(self.short_stop_requested)
         self.short_panel.estop_requested.connect(self.short_estop_requested)
 
+        self.battery_panel = BatteryTestPanel()
+        self.battery_panel.start_requested.connect(self.battery_start_requested)
+        self.battery_panel.stop_requested.connect(self.battery_stop_requested)
+        self.battery_panel.estop_requested.connect(self.battery_estop_requested)
+
         self._placeholder_pages: dict[str, QWidget] = {}
 
         self._add_mode("短路 (SHORT)", self.short_panel)
@@ -74,7 +84,7 @@ class AdvancedTestPanel(QFrame):
         self._add_placeholder("动态测试 (DYNA)")
         self._add_placeholder("自动测试 (AUTO)")
         self._add_placeholder("负载效应 (EFFT)")
-        self._add_placeholder("电池模式 (BATT)")
+        self._add_mode("电池模式 (BATT)", self.battery_panel)
         self._add_placeholder("时序测试 (TIME)")
         self._add_placeholder("LED 测试 (LED)")
         self._add_placeholder("过流测试 (OCP)")

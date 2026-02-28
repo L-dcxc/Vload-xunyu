@@ -7,12 +7,14 @@ from typing import Any
 
 from PyQt6.QtCore import Qt, pyqtSignal
 from PyQt6.QtWidgets import (
+    QApplication,
     QFileDialog,
     QFrame,
     QHBoxLayout,
     QLabel,
     QLineEdit,
     QMessageBox,
+    QProgressDialog,
     QPushButton,
     QTabWidget,
     QTableWidget,
@@ -135,6 +137,29 @@ class DataLogPanel(QFrame):
     def clear_data(self) -> None:
         self.data_table.setRowCount(0)
 
+    def load_imported_data(
+        self,
+        rows: list[tuple[float, float, float, float, float]],
+        progress: QProgressDialog | None = None,
+    ) -> bool:
+        self.data_table.setUpdatesEnabled(False)
+        try:
+            self.data_table.setRowCount(0)
+            self.data_table.setRowCount(len(rows))
+            for row_idx, (t_s, v, i, p, r) in enumerate(rows):
+                if progress is not None and (row_idx % 200 == 0 or row_idx == len(rows) - 1):
+                    progress.setValue(row_idx)
+                    QApplication.processEvents()
+                    if progress.wasCanceled():
+                        return False
+                ts = datetime.fromtimestamp(t_s).strftime("%Y-%m-%d %H:%M:%S.%f")[:-3]
+                for col, val in enumerate([ts, f"{v:.3f}", f"{i:.3f}", f"{p:.3f}", f"{r:.3f}"]):
+                    self.data_table.setItem(row_idx, col, QTableWidgetItem(val))
+        finally:
+            self.data_table.setUpdatesEnabled(True)
+        self.data_table.scrollToBottom()
+        return True
+
     def data_row_count(self) -> int:
         return self.data_table.rowCount()
 
@@ -159,7 +184,7 @@ class DataLogPanel(QFrame):
         for col, val in enumerate([ts, f"{v:.3f}", f"{i:.3f}", f"{p:.3f}", f"{r:.3f}"]):
             self.data_table.setItem(row, col, QTableWidgetItem(val))
 
-        if self.data_table.rowCount() > 5000:
+        if self.data_table.rowCount() > 50000:
             self.data_table.removeRow(0)
 
         self.data_table.scrollToBottom()

@@ -5,8 +5,10 @@ from datetime import datetime
 
 from PyQt6.QtCore import Qt, QTimer
 from PyQt6.QtWidgets import (
+    QApplication,
     QMainWindow,
     QMessageBox,
+    QProgressDialog,
     QTabWidget,
     QSplitter,
     QVBoxLayout,
@@ -47,6 +49,18 @@ class MainWindowV2(QMainWindow):
         self._recording = False
         self._recorder = RecordingManager()
         self._last_idn: str = ""
+
+        self._battery_running = False
+        self._battery_stopping = False
+        self._battery_mode: str = "CC"  # CC/CR/CP
+        self._battery_cutoff_v: float | None = None
+        self._battery_cutoff_time_s: float | None = None
+        self._battery_cutoff_mah: float | None = None
+        self._battery_start_monotonic: float = 0.0
+        self._battery_last_t: float | None = None
+        self._battery_mah: float = 0.0
+        self._battery_wh: float = 0.0
+        self._battery_stop_v: float | None = None
 
         self._build_ui()
         self._wire_events()
@@ -146,6 +160,10 @@ class MainWindowV2(QMainWindow):
         self.advanced.short_start_requested.connect(self._on_short_start_requested)
         self.advanced.short_stop_requested.connect(self._on_short_stop_requested)
         self.advanced.short_estop_requested.connect(self._on_short_estop_requested)
+
+        self.advanced.battery_start_requested.connect(self._on_battery_start_requested)
+        self.advanced.battery_stop_requested.connect(self._on_battery_stop_requested)
+        self.advanced.battery_estop_requested.connect(self._on_battery_estop_requested)
 
     def _wire_device_manager(self) -> None:
         """连接设备管理器信号"""
@@ -292,6 +310,33 @@ class MainWindowV2(QMainWindow):
             except Exception:
                 pass
 
+        if self._battery_running:
+            self._battery_stop_v = v
+            last_t = self._battery_last_t
+            self._battery_last_t = t
+            if last_t is not None:
+                dt = max(0.0, t - last_t)
+                self._battery_mah += i * dt / 3600.0 * 1000.0
+                self._battery_wh += p * dt / 3600.0
+
+            elapsed_s = max(0.0, time.monotonic() - self._battery_start_monotonic)
+            try:
+                self.advanced.battery_panel.set_stats(v, elapsed_s, self._battery_mah, self._battery_wh)
+            except Exception:
+                pass
+
+            if (not self._battery_stopping) and self._battery_cutoff_v is not None and v <= self._battery_cutoff_v:
+                self._stop_battery_test_auto("达到截止电压")
+                return
+
+            if (not self._battery_stopping) and self._battery_cutoff_time_s is not None and elapsed_s >= self._battery_cutoff_time_s:
+                self._stop_battery_test_auto("达到截止时间")
+                return
+
+            if (not self._battery_stopping) and self._battery_cutoff_mah is not None and self._battery_mah >= self._battery_cutoff_mah:
+                self._stop_battery_test_auto("达到截止容量")
+                return
+
     def _on_short_start_requested(self, duration_s: float, curr_prot: str, pow_prot: str) -> None:
         if not self._device_manager.is_connected():
             return
@@ -335,6 +380,177 @@ class MainWindowV2(QMainWindow):
         def _err(err: str) -> None:
             self.advanced.set_locked(False)
             self.data_log.append_run_log(f"短路测试启动失败: {err}")
+
+        self._pending_handlers[req] = (_ok, _err)
+
+    def _on_battery_start_requested(
+        self,
+        discharge_mode: str,
+        value: str,
+        cutoff_v: str,
+        cutoff_time_s: str,
+        cutoff_mah: str,
+    ) -> None:
+        if not self._device_manager.is_connected():
+            return
+
+        try:
+            val = float(value)
+        except Exception:
+            QMessageBox.warning(self, "错误", "放电参数格式错误，请输入数字")
+            return
+
+        self._battery_mode = str(discharge_mode).strip().upper()
+        self._battery_cutoff_v = float(cutoff_v) if cutoff_v else None
+        self._battery_cutoff_time_s = float(cutoff_time_s) if cutoff_time_s else None
+        self._battery_cutoff_mah = float(cutoff_mah) if cutoff_mah else None
+
+        self._battery_mah = 0.0
+        self._battery_wh = 0.0
+        self._battery_last_t = None
+        self._battery_stop_v = None
+        self._battery_stopping = False
+
+        try:
+            self.advanced.battery_panel.reset_stats()
+        except Exception:
+            pass
+
+        self.advanced.set_locked(True)
+
+        def _job(dev):
+            if self._battery_mode == "CC":
+                dev.set_mode("CURR")
+                dev.set_current(val)
+            elif self._battery_mode == "CR":
+                dev.set_mode("RES")
+                dev.set_resistance(val)
+            else:
+                dev.set_mode("POW")
+                dev.set_power(val)
+            dev.set_input(True)
+
+        req = self._device_manager.run_device_call_async(_job)
+
+        def _ok(_res: object) -> None:
+            self._battery_running = True
+            self._battery_start_monotonic = time.monotonic()
+            self.control.set_running(True)
+            self.advanced.battery_panel.set_running(True)
+            self._recording = True
+            self._start_recording_session()
+            self.data_log.append_run_log("电池放电测试开始")
+
+        def _err(err: str) -> None:
+            self.advanced.set_locked(False)
+            self.data_log.append_run_log(f"电池放电测试启动失败: {err}")
+
+        self._pending_handlers[req] = (_ok, _err)
+
+    def _stop_battery_test_auto(self, reason: str) -> None:
+        if not self._battery_running:
+            return
+        if not self._device_manager.is_connected():
+            return
+
+        if self._battery_stopping:
+            return
+        self._battery_stopping = True
+
+        def _job(dev):
+            dev.set_input(False)
+
+        req = self._device_manager.run_device_call_async(_job)
+
+        def _ok(_res: object) -> None:
+            self._battery_running = False
+            self._battery_stopping = False
+            self.control.set_running(False)
+            self.advanced.battery_panel.set_running(False)
+            self._recording = False
+            self._recorder.stop()
+            self.advanced.set_locked(False)
+
+            elapsed_s = max(0.0, time.monotonic() - self._battery_start_monotonic)
+            try:
+                self.advanced.battery_panel.set_stats(self._battery_stop_v, elapsed_s, self._battery_mah, self._battery_wh)
+            except Exception:
+                pass
+            self.data_log.append_run_log(f"电池放电测试结束：{reason}")
+
+        def _err(err: str) -> None:
+            self._battery_stopping = False
+            self.data_log.append_run_log(f"电池放电测试停止失败: {err}")
+
+        self._pending_handlers[req] = (_ok, _err)
+
+    def _on_battery_stop_requested(self) -> None:
+        if not self._device_manager.is_connected():
+            return
+        if not self._battery_running:
+            return
+
+        if self._battery_stopping:
+            return
+        self._battery_stopping = True
+
+        def _job(dev):
+            dev.set_input(False)
+
+        req = self._device_manager.run_device_call_async(_job)
+
+        def _ok(_res: object) -> None:
+            self._battery_running = False
+            self._battery_stopping = False
+            self.control.set_running(False)
+            self.advanced.battery_panel.set_running(False)
+            self._recording = False
+            self._recorder.stop()
+            self.advanced.set_locked(False)
+            elapsed_s = max(0.0, time.monotonic() - self._battery_start_monotonic)
+            try:
+                self.advanced.battery_panel.set_stats(self._battery_stop_v, elapsed_s, self._battery_mah, self._battery_wh)
+            except Exception:
+                pass
+            self.data_log.append_run_log("电池放电测试结束")
+
+        def _err(err: str) -> None:
+            self._battery_stopping = False
+            self.data_log.append_run_log(f"电池放电测试停止失败: {err}")
+
+        self._pending_handlers[req] = (_ok, _err)
+
+    def _on_battery_estop_requested(self) -> None:
+        if not self._device_manager.is_connected():
+            return
+
+        if self._battery_stopping:
+            return
+        self._battery_stopping = True
+
+        def _job(dev):
+            dev.set_input(False)
+
+        req = self._device_manager.run_device_call_async(_job)
+
+        def _ok(_res: object) -> None:
+            self._battery_running = False
+            self._battery_stopping = False
+            self.control.set_running(False)
+            self.advanced.battery_panel.set_running(False)
+            self._recording = False
+            self._recorder.stop()
+            self.advanced.set_locked(False)
+            elapsed_s = max(0.0, time.monotonic() - self._battery_start_monotonic)
+            try:
+                self.advanced.battery_panel.set_stats(self._battery_stop_v, elapsed_s, self._battery_mah, self._battery_wh)
+            except Exception:
+                pass
+            self.data_log.append_run_log("电池放电测试紧急停止")
+
+        def _err(err: str) -> None:
+            self._battery_stopping = False
+            self.data_log.append_run_log(f"电池放电测试紧急停止失败: {err}")
 
         self._pending_handlers[req] = (_ok, _err)
 
@@ -666,8 +882,50 @@ class MainWindowV2(QMainWindow):
         # 将导入的数据添加到波形和数据表
         # data_list 中的 t 需要转换为时间戳
         base_time = time.time()
+        total = len(data_list)
+
+        progress = QProgressDialog("正在导入波形…", "取消", 0, max(1, total), self)
+        progress.setWindowTitle("导入波形")
+        progress.setWindowModality(Qt.WindowModality.ApplicationModal)
+        progress.setMinimumDuration(0)
+        progress.setValue(0)
+        QApplication.processEvents()
+
+        abs_rows: list[tuple[float, float, float, float, float]] = []
         for idx, (t, v, i, p, r) in enumerate(data_list):
-            # 将相对时间转换为绝对时间戳
-            timestamp = base_time + t
+            if idx % 200 == 0:
+                progress.setLabelText("正在解析数据…")
+                progress.setValue(idx)
+                QApplication.processEvents()
+                if progress.wasCanceled():
+                    self.data_log.append_run_log("导入已取消")
+                    progress.close()
+                    return
+            timestamp = base_time + float(t)
+            abs_rows.append((timestamp, float(v), float(i), float(p), float(r)))
+
+        progress.setLabelText("正在填充表格…")
+        progress.setValue(0)
+        QApplication.processEvents()
+        ok = self.data_log.load_imported_data(abs_rows, progress=progress)
+        if not ok:
+            self.data_log.append_run_log("导入已取消")
+            progress.close()
+            return
+
+        progress.setLabelText("正在绘制曲线…")
+        progress.setValue(0)
+        QApplication.processEvents()
+        for idx, (timestamp, v, i, p, r) in enumerate(abs_rows):
+            if idx % 200 == 0:
+                progress.setValue(idx)
+                QApplication.processEvents()
+                if progress.wasCanceled():
+                    self.data_log.append_run_log("导入已取消")
+                    progress.close()
+                    return
             self.plot.append_point(timestamp, v, i, p, r)
-            self.data_log.append_data(v, i, p, r)
+
+        self.plot.show_all()
+        progress.setValue(total)
+        progress.close()

@@ -1,6 +1,6 @@
 # Vload-xunyu
 
-用于迅羽科技电子负载的上位机软件（PyQt6）。支持通过 **COM 串口** / **TCP** 与设备通信，实现实时监控、曲线绘制、数据记录与导出，并逐步完善高级测试（SHORT/LIST/DYNA/AUTO/BATT/LED/OCP/TIME 等）。
+用于广州迅屿科技有限公司电子负载的上位机软件（PyQt6）。支持通过 **COM 串口** / **TCP** 与设备通信，实现实时监控、曲线绘制、数据记录与导出，并逐步完善高级测试（SHORT/LIST/DYNA/AUTO/BATT/LED/OCP/TIME 等）。
 
 ## 功能特性
 
